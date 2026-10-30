@@ -297,22 +297,27 @@ public class NpgsqlNodaTimeMethodCallTranslator(
     //   remaining days (e.g. 2018-04-30 - 2018-03-31 is 30 days in PostgreSQL but 1 month in NodaTime). See timestamp_age:
     //   https://github.com/postgres/postgres/blob/REL_18_6/src/backend/utils/adt/timestamp.c#L4317-L4454
     //   and Period.DateComponentsBetween: https://github.com/nodatime/nodatime/blob/3.2.2/src/NodaTime/Period.cs#L547
-    // * LocalDateTime - LocalDateTime: timestamp subtraction returns days and time, never months or years.
+    // * LocalDateTime - LocalDateTime: DESIGN QUESTION: translated with age() like LocalDate - LocalDate (see above), rather than with
+    //   timestamp subtraction, which returns days and time but never months or years.
     private SqlExpression Subtract(SqlExpression left, SqlExpression right)
     {
-        // Like the LocalDate - LocalDate operator (see NpgsqlSqlTranslatingExpressionVisitor.VisitBinary), use age(), which returns a
-        // calendar period rather than date subtraction's integer number of days; cast to timestamp to avoid time zone-dependent
-        // arithmetic.
-        if (left.Type.UnwrapNullableType() == typeof(LocalDate) && right.Type.UnwrapNullableType() == typeof(LocalDate))
+        // Like the LocalDate/LocalDateTime - operator (see NpgsqlSqlTranslatingExpressionVisitor.VisitBinary), use age(), which returns a
+        // calendar period rather than date subtraction's integer number of days or timestamp subtraction's days and time; cast dates to
+        // timestamp to avoid time zone-dependent arithmetic.
+        var leftType = left.Type.UnwrapNullableType();
+        if ((leftType == typeof(LocalDate) || leftType == typeof(LocalDateTime)) && right.Type.UnwrapNullableType() == leftType)
         {
             var timestampMapping = _typeMappingSource.FindMapping(typeof(DateTime), "timestamp without time zone");
 
             return _sqlExpressionFactory.Function(
                 "age",
-                [
-                    _sqlExpressionFactory.Convert(left, typeof(DateTime), timestampMapping),
-                    _sqlExpressionFactory.Convert(right, typeof(DateTime), timestampMapping)
-                ],
+                leftType == typeof(LocalDate)
+                    ?
+                    [
+                        _sqlExpressionFactory.Convert(left, typeof(DateTime), timestampMapping),
+                        _sqlExpressionFactory.Convert(right, typeof(DateTime), timestampMapping)
+                    ]
+                    : [left, right],
                 nullable: true,
                 argumentsPropagateNullability: TrueArrays[2],
                 typeof(Period));

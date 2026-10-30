@@ -24,7 +24,7 @@ public class LocalDateTimeTranslationsTest : QueryTestBase<NodaTimeQueryNpgsqlFi
             """
 SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
 FROM "NodaTimeTypes" AS n
-WHERE (n."LocalDateTime" + INTERVAL 'P1D') - n."LocalDateTime" = INTERVAL 'P1D'
+WHERE age(n."LocalDateTime" + INTERVAL 'P1D', n."LocalDateTime") = INTERVAL 'P1D'
 """);
     }
 

@@ -230,11 +230,13 @@ public class NpgsqlSqlTranslatingExpressionVisitor(
             binaryExpression.NodeType != ExpressionType.ArrayIndex,
             "During preprocessing, ArrayIndex and List[] get normalized to ElementAt; see NpgsqlArrayTranslator. Should never see ArrayIndex.");
 
-        // PostgreSQL date subtraction returns an integer number of days; age() returns a calendar period instead.
-        // Its month-end handling differs from NodaTime's. Cast to timestamp to avoid time zone-dependent arithmetic.
+        // PostgreSQL date subtraction returns an integer number of days, and timestamp subtraction returns days and time; age() returns
+        // a calendar period (years, months, days, time) instead, like NodaTime. Its month-end handling differs from NodaTime's (see
+        // timestamp_age: https://github.com/postgres/postgres/blob/REL_18_6/src/backend/utils/adt/timestamp.c#L4317-L4454).
+        // Cast dates to timestamp to avoid time zone-dependent arithmetic.
         if (binaryExpression.NodeType is ExpressionType.Subtract
-            && binaryExpression.Left.Type.UnwrapNullableType().FullName == "NodaTime.LocalDate"
-                && binaryExpression.Right.Type.UnwrapNullableType().FullName == "NodaTime.LocalDate")
+            && binaryExpression.Left.Type.UnwrapNullableType().FullName is "NodaTime.LocalDate" or "NodaTime.LocalDateTime"
+            && binaryExpression.Right.Type.UnwrapNullableType() == binaryExpression.Left.Type.UnwrapNullableType())
         {
             if (TranslationFailed(binaryExpression.Left, Visit(TryRemoveImplicitConvert(binaryExpression.Left)), out var sqlLeft)
                 || TranslationFailed(binaryExpression.Right, Visit(TryRemoveImplicitConvert(binaryExpression.Right)), out var sqlRight))
@@ -242,11 +244,13 @@ public class NpgsqlSqlTranslatingExpressionVisitor(
                 return QueryCompilationContext.NotTranslatedExpression;
             }
 
+            var isDate = binaryExpression.Left.Type.UnwrapNullableType().FullName == "NodaTime.LocalDate";
+
             return _sqlExpressionFactory.Function(
                 "age",
                 [
-                    _sqlExpressionFactory.Convert(sqlLeft!, typeof(DateTime), _timestampMapping),
-                    _sqlExpressionFactory.Convert(sqlRight!, typeof(DateTime), _timestampMapping)
+                    isDate ? _sqlExpressionFactory.Convert(sqlLeft!, typeof(DateTime), _timestampMapping) : sqlLeft!,
+                    isDate ? _sqlExpressionFactory.Convert(sqlRight!, typeof(DateTime), _timestampMapping) : sqlRight!
                 ],
                 nullable: true,
                 argumentsPropagateNullability: TrueArrays[2],

@@ -267,11 +267,18 @@ public class NodaTimeParityTest : IClassFixture<NodaTimeParityFixture>
         yield return Case((LocalDateTime d, long n) => d.PlusMinutes(n).Date, MonthEndDateTime, 30, new LocalDate(2018, 2, 1));
         yield return Case((LocalDateTime d, long n) => d.PlusMinutes(n).Minute, MonthEndDateTime, 45, 15);
 
-        // LocalDateTime - LocalDateTime, less than a month apart, as timestamp subtraction never returns months or years
-        // (see NpgsqlNodaTimeMethodCallTranslator)
+        // LocalDateTime - LocalDateTime, with timestamps for which age() matches NodaTime (see NpgsqlNodaTimeMethodCallTranslator)
         yield return Case((LocalDateTime a, LocalDateTime b) => a - b, DateAndTime, DateAndTime.PlusHours(-3), Period.FromHours(3));
         yield return Case((LocalDateTime a, LocalDateTime b) => a - b, DateAndTime, DateAndTime.PlusDays(-1), Period.FromDays(1));
         yield return Case((LocalDateTime a, LocalDateTime b) => a - b, DateAndTime.PlusDays(-1), DateAndTime, Period.FromDays(-1));
+        yield return Case(
+            (LocalDateTime a, LocalDateTime b) => a - b, DateAndTime, DateAndTime.PlusDays(-32).PlusHours(-3),
+            PeriodOf(months: 1, days: 1, hours: 3));
+        yield return Case(
+            (LocalDateTime a, LocalDateTime b) => a.Minus(b), DateAndTime, DateAndTime.PlusYears(-1).PlusMonths(-1),
+            PeriodOf(years: 1, months: 1));
+        yield return Case(
+            (LocalDateTime a, LocalDateTime b) => (a - b).Months, DateAndTime, DateAndTime.PlusDays(-32).PlusHours(-3), 1);
         yield return Case(
             (LocalDateTime a, LocalDateTime b) => a.Minus(b), DateAndTime, DateAndTime.PlusHours(-30), PeriodOf(days: 1, hours: 6));
         yield return Case(

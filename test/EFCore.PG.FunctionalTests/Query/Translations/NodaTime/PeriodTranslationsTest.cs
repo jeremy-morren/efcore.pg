@@ -119,7 +119,7 @@ WHERE date_part('minute', n."Period")::int = 31
             """
 SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
 FROM "NodaTimeTypes" AS n
-WHERE floor(date_part('second', n."Period"))::int = 23
+WHERE trunc(date_part('second', n."Period"))::int = 23
 """);
     }
 
@@ -326,7 +326,7 @@ WHERE date_part('minute', make_interval(mins => n."Long"::int))::int = 1
             """
 SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
 FROM "NodaTimeTypes" AS n
-WHERE floor(date_part('second', make_interval(secs => n."Id"::bigint::double precision)))::int = 1
+WHERE trunc(date_part('second', make_interval(secs => n."Id"::bigint::double precision)))::int = 1
 """);
     }
 
@@ -342,7 +342,7 @@ WHERE floor(date_part('second', make_interval(secs => n."Id"::bigint::double pre
             """
 SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
 FROM "NodaTimeTypes" AS n
-WHERE floor(date_part('second', make_interval(secs => n."Long"::double precision)))::int = 1
+WHERE trunc(date_part('second', make_interval(secs => n."Long"::double precision)))::int = 1
 """);
     }
 

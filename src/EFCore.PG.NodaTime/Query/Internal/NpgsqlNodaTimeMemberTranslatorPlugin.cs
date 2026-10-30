@@ -48,7 +48,6 @@ public class NpgsqlNodaTimeMemberTranslator(
     private readonly NpgsqlSqlExpressionFactory _sqlExpressionFactory = sqlExpressionFactory;
     private readonly IRelationalTypeMappingSource _typeMappingSource = typeMappingSource;
     private readonly RelationalTypeMapping _dateTypeMapping = typeMappingSource.FindMapping(typeof(LocalDate))!;
-    private readonly RelationalTypeMapping _periodTypeMapping = typeMappingSource.FindMapping(typeof(Period))!;
     private readonly RelationalTypeMapping _localDateTimeTypeMapping = typeMappingSource.FindMapping(typeof(LocalDateTime))!;
     private static readonly bool[][] TrueArrays = [[], [true], [true, true]];
 
@@ -85,7 +84,8 @@ public class NpgsqlNodaTimeMemberTranslator(
             return TranslateDateTime(instance, member);
         }
 
-        if (declaringType == typeof(ZonedDateTime))
+        // OffsetDateTime is mapped to timestamptz like ZonedDateTime, and read back with a zero offset
+        if (declaringType == typeof(ZonedDateTime) || declaringType == typeof(OffsetDateTime))
         {
             return TranslateZonedDateTime(instance, member, returnType);
         }
@@ -153,7 +153,7 @@ public class NpgsqlNodaTimeMemberTranslator(
                 [instance],
                 nullable: true,
                 argumentsPropagateNullability: [false],
-                typeof(Interval),
+                typeof(Instant),
                 _typeMappingSource.FindMapping(typeof(Instant)));
 
         SqlExpression Upper()
@@ -162,7 +162,7 @@ public class NpgsqlNodaTimeMemberTranslator(
                 [instance],
                 nullable: true,
                 argumentsPropagateNullability: [false],
-                typeof(Interval),
+                typeof(Instant),
                 _typeMappingSource.FindMapping(typeof(Instant)));
     }
 
@@ -175,27 +175,28 @@ public class NpgsqlNodaTimeMemberTranslator(
         {
             nameof(DateInterval.Start) => Lower(),
 
-            // PostgreSQL creates a result of type 'timestamp without time zone' when subtracting intervals from dates, so add a cast back
-            // to date.
+            // date - integer yields a date
             nameof(DateInterval.End)
-                => _sqlExpressionFactory.Convert(
-                    _sqlExpressionFactory.Subtract(
-                        Upper(),
-                        _sqlExpressionFactory.Constant(Period.FromDays(1), _periodTypeMapping),
-                        _typeMappingSource.FindMapping(typeof(LocalDateTime))), typeof(LocalDate),
-                    _typeMappingSource.FindMapping(typeof(LocalDate))),
+                => new SqlBinaryExpression(
+                    ExpressionType.Subtract,
+                    Upper(),
+                    _sqlExpressionFactory.Constant(1, _typeMappingSource.FindMapping(typeof(int))),
+                    typeof(LocalDate),
+                    _dateTypeMapping),
 
             nameof(DateInterval.Length) => _sqlExpressionFactory.Subtract(Upper(), Lower()),
 
             _ => null
         };
 
+        // lower()/upper() return NULL for an infinite or empty bound, even when the range itself isn't NULL (dateranges which weren't
+        // written as a DateInterval).
         SqlExpression Lower()
             => _sqlExpressionFactory.Function(
                 "lower",
                 [instance],
                 nullable: true,
-                argumentsPropagateNullability: TrueArrays[1],
+                argumentsPropagateNullability: [false],
                 typeof(LocalDate),
                 _dateTypeMapping);
 
@@ -204,7 +205,7 @@ public class NpgsqlNodaTimeMemberTranslator(
                 "upper",
                 [instance],
                 nullable: true,
-                argumentsPropagateNullability: TrueArrays[1],
+                argumentsPropagateNullability: [false],
                 typeof(LocalDate),
                 _dateTypeMapping);
     }
@@ -230,8 +231,34 @@ public class NpgsqlNodaTimeMemberTranslator(
             "Day" or "Days" => GetDatePartExpression(instance, "day"),
             "Hour" or "Hours" => GetDatePartExpression(instance, "hour"),
             "Minute" or "Minutes" => GetDatePartExpression(instance, "minute"),
-            "Second" or "Seconds" => GetDatePartExpression(instance, "second", true),
-            "Millisecond" or "Milliseconds" => null, // Too annoying
+            "Second" => GetDatePartExpression(instance, "second", true),
+
+            // Period's can be negative, and are truncated towards zero like NodaTime's (date_part('second') includes the milliseconds)
+            "Seconds" => _sqlExpressionFactory.Convert(
+                _sqlExpressionFactory.Function(
+                    "trunc",
+                    [GetDatePartExpressionDouble(instance, "second")],
+                    nullable: true,
+                    argumentsPropagateNullability: TrueArrays[1],
+                    typeof(double)),
+                typeof(int)),
+            // date_part('milliseconds') includes the seconds; LocalDateTime/LocalTime's are positive
+            "Millisecond" => _sqlExpressionFactory.Modulo(
+                GetDatePartExpression(instance, "milliseconds", floor: true), _sqlExpressionFactory.Constant(1000)),
+
+            // Period's can be negative, and are truncated towards zero like NodaTime's
+            "Milliseconds" => _sqlExpressionFactory.Convert(
+                _sqlExpressionFactory.Modulo(
+                    _sqlExpressionFactory.Convert(
+                        _sqlExpressionFactory.Function(
+                            "trunc",
+                            [GetDatePartExpressionDouble(instance, "milliseconds")],
+                            nullable: true,
+                            argumentsPropagateNullability: TrueArrays[1],
+                            typeof(double)),
+                        typeof(int)),
+                    _sqlExpressionFactory.Constant(1000)),
+                typeof(long)),
 
             // Unlike DateTime.DayOfWeek, NodaTime's IsoDayOfWeek enum doesn't exactly correspond to PostgreSQL's
             // values returned by date_part('dow', ...): in NodaTime Sunday is 7 and not 0, which is None.
@@ -245,8 +272,13 @@ public class NpgsqlNodaTimeMemberTranslator(
             // PG allows converting a timestamp directly to date, truncating the time; but given a timestamptz, it performs a time zone
             // conversion (based on TimeZone), which we don't want (so avoid translating except on timestamp).
             // The translation for ZonedDateTime.Date converts to timestamp before ending up here.
+            // A LocalDateTime whose type mapping isn't known yet (e.g. arithmetic on a parameter) can only be mapped to timestamp.
             "Date" when instance.TypeMapping is TimestampLocalDateTimeMapping or LegacyTimestampInstantMapping
-                => _sqlExpressionFactory.Convert(instance, typeof(LocalDate), _typeMappingSource.FindMapping(typeof(LocalDate))!),
+                    || instance.TypeMapping is null && instance.Type == typeof(LocalDateTime)
+                => _sqlExpressionFactory.Convert(
+                    _sqlExpressionFactory.ApplyTypeMapping(instance, _localDateTimeTypeMapping),
+                    typeof(LocalDate),
+                    _typeMappingSource.FindMapping(typeof(LocalDate))!),
 
             "TimeOfDay" => _sqlExpressionFactory.Convert(
                 instance,

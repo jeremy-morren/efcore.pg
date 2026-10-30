@@ -324,6 +324,218 @@ WHERE n."LocalDateTime" = TIMESTAMP '2018-04-20T10:31:33.666'
 """);
     }
 
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task Plus_Period(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.Plus(Period.FromDays(1))));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" + INTERVAL 'P1D'
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task Minus_Period(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.Minus(Period.FromMonths(1))));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" - INTERVAL 'P1M'
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task Add_static(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Where(t => LocalDateTime.Add(t.LocalDateTime, Period.FromDays(1)) > t.LocalDateTime));
+
+        AssertSql(
+            """
+SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
+FROM "NodaTimeTypes" AS n
+WHERE n."LocalDateTime" + INTERVAL 'P1D' > n."LocalDateTime"
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task Subtract_static_Period(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Where(t => LocalDateTime.Subtract(t.LocalDateTime, Period.FromDays(1)) < t.LocalDateTime));
+
+        AssertSql(
+            """
+SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
+FROM "NodaTimeTypes" AS n
+WHERE n."LocalDateTime" - INTERVAL 'P1D' < n."LocalDateTime"
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusYears(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.PlusYears(2)));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" + make_interval(years => 2)
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusMonths(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.PlusMonths(t.Id)));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" + make_interval(months => n."Id")
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusWeeks(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.PlusWeeks(3)));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" + make_interval(weeks => 3)
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusDays(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.PlusDays(-30)));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" + make_interval(days => -30)
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusHours(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.PlusHours(20)));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" + make_interval(hours => 20::int)
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusMinutes(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.PlusMinutes(t.Id)));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" + make_interval(mins => n."Id")
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusSeconds(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.PlusSeconds(t.Long)));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" + make_interval(secs => n."Long"::double precision)
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusMonths_month_end(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.PlusDays(-20).PlusMonths(1)));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" + make_interval(days => -20) + make_interval(months => 1)
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusHours_negative_across_days(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.PlusHours(-30)));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" + make_interval(hours => -30::int)
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusMilliseconds(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.LocalDateTime.PlusMilliseconds(t.Long)));
+
+        AssertSql(
+            """
+SELECT n."LocalDateTime" + n."Long" * INTERVAL 'PT0.001S'
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
     private NodaTimeContext CreateContext()
         => Fixture.CreateContext();
 

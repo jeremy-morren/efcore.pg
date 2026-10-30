@@ -287,6 +287,176 @@ LIMIT 1
 """);
     }
 
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task Plus_Duration(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.ZonedDateTime.Plus(Duration.FromDays(1))));
+
+        AssertSql(
+            """
+SELECT ((n."ZonedDateTime" AT TIME ZONE 'UTC') + INTERVAL '1 00:00:00') AT TIME ZONE 'UTC'
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task Minus_Duration(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Where(t => t.ZonedDateTime.Minus(Duration.FromDays(1)).ToInstant() < t.Instant));
+
+        AssertSql(
+            """
+SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
+FROM "NodaTimeTypes" AS n
+WHERE ((n."ZonedDateTime" AT TIME ZONE 'UTC') - INTERVAL '1 00:00:00') AT TIME ZONE 'UTC' < n."Instant"
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task Minus_ZonedDateTime(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Where(t => t.ZonedDateTime.Plus(Duration.FromDays(1)).Minus(t.ZonedDateTime) == Duration.FromDays(1)));
+
+        AssertSql(
+            """
+SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
+FROM "NodaTimeTypes" AS n
+WHERE (((n."ZonedDateTime" AT TIME ZONE 'UTC') + INTERVAL '1 00:00:00') AT TIME ZONE 'UTC') - n."ZonedDateTime" = INTERVAL '1 00:00:00'
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task Add_static(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Where(t => ZonedDateTime.Add(t.ZonedDateTime, Duration.FromDays(1)).ToInstant() > t.Instant));
+
+        AssertSql(
+            """
+SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
+FROM "NodaTimeTypes" AS n
+WHERE ((n."ZonedDateTime" AT TIME ZONE 'UTC') + INTERVAL '1 00:00:00') AT TIME ZONE 'UTC' > n."Instant"
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task Subtract_static_Duration(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Where(t => ZonedDateTime.Subtract(t.ZonedDateTime, Duration.FromDays(1)).ToInstant() < t.Instant));
+
+        AssertSql(
+            """
+SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
+FROM "NodaTimeTypes" AS n
+WHERE ((n."ZonedDateTime" AT TIME ZONE 'UTC') - INTERVAL '1 00:00:00') AT TIME ZONE 'UTC' < n."Instant"
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task Subtract_static_ZonedDateTime(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Where(t => ZonedDateTime.Subtract(t.ZonedDateTime + Duration.FromDays(1), t.ZonedDateTime) == Duration.FromDays(1)));
+
+        AssertSql(
+            """
+SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
+FROM "NodaTimeTypes" AS n
+WHERE (((n."ZonedDateTime" AT TIME ZONE 'UTC') + INTERVAL '1 00:00:00') AT TIME ZONE 'UTC') - n."ZonedDateTime" = INTERVAL '1 00:00:00'
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusHours(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.ZonedDateTime.PlusHours(15)));
+
+        AssertSql(
+            """
+SELECT ((n."ZonedDateTime" AT TIME ZONE 'UTC') + make_interval(hours => 15)) AT TIME ZONE 'UTC'
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusMinutes(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.ZonedDateTime.PlusMinutes(t.Id)));
+
+        AssertSql(
+            """
+SELECT ((n."ZonedDateTime" AT TIME ZONE 'UTC') + make_interval(mins => n."Id")) AT TIME ZONE 'UTC'
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusSeconds(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.ZonedDateTime.PlusSeconds(t.Long)));
+
+        AssertSql(
+            """
+SELECT ((n."ZonedDateTime" AT TIME ZONE 'UTC') + make_interval(secs => n."Long"::double precision)) AT TIME ZONE 'UTC'
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusHours_negative(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.ZonedDateTime.PlusHours(-30)));
+
+        AssertSql(
+            """
+SELECT ((n."ZonedDateTime" AT TIME ZONE 'UTC') + make_interval(hours => -30)) AT TIME ZONE 'UTC'
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
+    [ConditionalTheory]
+    [MemberData(nameof(IsAsyncData))]
+    public async Task PlusMilliseconds(bool async)
+    {
+        await AssertQuery(
+            async,
+            ss => ss.Set<NodaTimeTypes>().Select(t => t.ZonedDateTime.PlusMilliseconds(t.Long)));
+
+        AssertSql(
+            """
+SELECT ((n."ZonedDateTime" AT TIME ZONE 'UTC') + n."Long" * INTERVAL '00:00:00.001') AT TIME ZONE 'UTC'
+FROM "NodaTimeTypes" AS n
+""");
+    }
+
     private NodaTimeContext CreateContext()
         => Fixture.CreateContext();
 

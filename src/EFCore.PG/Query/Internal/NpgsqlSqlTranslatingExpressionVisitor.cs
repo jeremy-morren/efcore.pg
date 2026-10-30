@@ -145,6 +145,10 @@ public class NpgsqlSqlTranslatingExpressionVisitor(
 
         switch (unaryExpression.NodeType)
         {
+            // Unary plus (e.g. +timeSpan, or NodaTime's +duration and +period) returns its operand
+            case ExpressionType.UnaryPlus:
+                return Visit(unaryExpression.Operand);
+
             case ExpressionType.ArrayLength:
                 if (TranslationFailed(unaryExpression.Operand, Visit(unaryExpression.Operand), out var sqlOperand))
                 {

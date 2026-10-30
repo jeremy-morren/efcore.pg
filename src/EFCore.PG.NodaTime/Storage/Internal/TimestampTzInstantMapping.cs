@@ -79,7 +79,9 @@ public class TimestampTzInstantMapping : NpgsqlTypeMapping
     ///     doing so can result in application failures when updating to a new Entity Framework Core release.
     /// </summary>
     protected override string GenerateNonNullSqlLiteral(object value)
-        => $"TIMESTAMPTZ '{Format((Instant)value)}'";
+        // ZonedDateTime.ToInstant() is translated by giving the ZonedDateTime expression this type mapping, so a parameter which gets
+        // inlined as a constant (e.g. with EF.Constant()) can have a ZonedDateTime value.
+        => $"TIMESTAMPTZ '{Format(value is ZonedDateTime zonedDateTime ? zonedDateTime.ToInstant() : (Instant)value)}'";
 
     /// <summary>
     ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to

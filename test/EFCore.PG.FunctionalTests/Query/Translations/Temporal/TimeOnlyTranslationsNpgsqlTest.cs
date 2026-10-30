@@ -43,7 +43,7 @@ WHERE date_part('minute', b."TimeOnly")::int = 30
             """
 SELECT b."Id", b."Bool", b."Byte", b."ByteArray", b."DateOnly", b."DateTime", b."DateTimeOffset", b."Decimal", b."Double", b."Enum", b."FlagsEnum", b."Float", b."Guid", b."Int", b."Long", b."Short", b."String", b."TimeOnly", b."TimeSpan"
 FROM "BasicTypesEntities" AS b
-WHERE date_part('second', b."TimeOnly")::int = 10
+WHERE floor(date_part('second', b."TimeOnly"))::int = 10
 """);
     }
 
@@ -131,7 +131,7 @@ WHERE b."TimeOnly" >= TIME '14:00:00' AND b."TimeOnly" < TIME '16:00:00'
             """
 SELECT b."Id", b."Bool", b."Byte", b."ByteArray", b."DateOnly", b."DateTime", b."DateTimeOffset", b."Decimal", b."Double", b."Enum", b."FlagsEnum", b."Float", b."Guid", b."Int", b."Long", b."Short", b."String", b."TimeOnly", b."TimeSpan"
 FROM "BasicTypesEntities" AS b
-WHERE b."TimeOnly" - TIME '03:00:00' = INTERVAL '12:30:10'
+WHERE CAST(b."TimeOnly" - TIME '03:00:00' AS time without time zone)::interval = INTERVAL '12:30:10'
 """);
     }
 

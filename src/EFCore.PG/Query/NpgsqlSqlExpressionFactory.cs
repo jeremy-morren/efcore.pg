@@ -98,7 +98,36 @@ public class NpgsqlSqlExpressionFactory : SqlExpressionFactory
     public virtual AtTimeZoneExpression AtUtc(
         SqlExpression timestamp,
         RelationalTypeMapping? typeMapping = null)
-        => AtTimeZone(timestamp, Constant("UTC"), timestamp.Type);
+    {
+        // A timestamptz converted to UTC is a timestamp without time zone, i.e. a local date and time: a DateTimeOffset becomes a
+        // DateTime, and NodaTime's Instant, ZonedDateTime and OffsetDateTime become a LocalDateTime.
+        var type = timestamp.Type;
+        if ((timestamp.TypeMapping ?? _typeMappingSource.FindMapping(type, Dependencies.Model))
+            is INpgsqlTypeMapping { NpgsqlDbType: NpgsqlDbType.TimestampTz })
+        {
+            type = type == typeof(DateTimeOffset)
+                ? typeof(DateTime)
+                : type.FullName is "NodaTime.Instant" or "NodaTime.ZonedDateTime" or "NodaTime.OffsetDateTime"
+                    ? type.Assembly.GetType("NodaTime.LocalDateTime")!
+                    : type;
+        }
+
+        return AtTimeZone(timestamp, Constant("UTC"), type, typeMapping);
+    }
+
+    /// <summary>
+    ///     Creates an <c>EXTRACT(field FROM source)</c> expression, which (unlike <c>date_part()</c>) returns an exact numeric.
+    /// </summary>
+    public virtual SqlExpression Extract(string field, SqlExpression source)
+        => PgFunctionExpression.CreateWithArgumentSeparators(
+            "extract",
+            [Fragment(field), ApplyDefaultTypeMapping(source)],
+            ["FROM"],
+            nullable: true,
+            argumentsPropagateNullability: [false, true],
+            builtIn: true,
+            typeof(decimal),
+            _typeMappingSource.FindMapping(typeof(decimal)));
 
     /// <summary>
     ///     Creates a new <see cref="AtTimeZoneExpression" />, for converting a timestamp to another time zone.
@@ -114,13 +143,17 @@ public class NpgsqlSqlExpressionFactory : SqlExpressionFactory
             // PostgreSQL AT TIME ZONE flips the given type from timestamptz to timestamp and vice versa
             // See https://www.postgresql.org/docs/current/functions-datetime.html#FUNCTIONS-DATETIME-ZONECONVERT
             // The store type may be an alias (timestamptz) or have a precision (timestamp(3) with time zone), so check the NpgsqlDbType.
-            typeMapping = (timestamp.TypeMapping ?? _typeMappingSource.FindMapping(timestamp.Type, Dependencies.Model)!) switch
+            // The result's mapping is for its .NET type if there's one, since a store type alone can map to another type (e.g. with
+            // NodaTime, timestamp without time zone is LocalDateTime rather than DateTime).
+            var storeType = (timestamp.TypeMapping ?? _typeMappingSource.FindMapping(timestamp.Type, Dependencies.Model)!) switch
             {
-                INpgsqlTypeMapping { NpgsqlDbType: NpgsqlDbType.TimestampTz } => _typeMappingSource.FindMapping("timestamp without time zone")!,
-                INpgsqlTypeMapping { NpgsqlDbType: NpgsqlDbType.Timestamp } => _typeMappingSource.FindMapping("timestamp with time zone")!,
+                INpgsqlTypeMapping { NpgsqlDbType: NpgsqlDbType.TimestampTz } => "timestamp without time zone",
+                INpgsqlTypeMapping { NpgsqlDbType: NpgsqlDbType.Timestamp } => "timestamp with time zone",
                 var mapping => throw new ArgumentException(
                     $"timestamp argument to AtTimeZone had unknown store type {mapping.StoreType}", nameof(timestamp))
             };
+
+            typeMapping = _typeMappingSource.FindMapping(type, storeType) ?? _typeMappingSource.FindMapping(storeType)!;
         }
 
         return new AtTimeZoneExpression(
@@ -233,16 +266,29 @@ public class NpgsqlSqlExpressionFactory : SqlExpressionFactory
         {
             case ExpressionType.Subtract
                 when left.Type == typeof(DateTime) && right.Type == typeof(DateTime)
-                || left.Type == typeof(DateTimeOffset) && right.Type == typeof(DateTimeOffset)
-                || left.Type == typeof(TimeOnly) && right.Type == typeof(TimeOnly):
+                || left.Type == typeof(DateTimeOffset) && right.Type == typeof(DateTimeOffset):
             {
                 return (SqlBinaryExpression)ApplyTypeMapping(
                     new SqlBinaryExpression(ExpressionType.Subtract, left, right, typeof(TimeSpan), null), typeMapping);
             }
 
+            // TimeOnly - TimeOnly => TimeSpan: .NET wraps around midnight (08:00 - 09:30 is 22:30), whereas PostgreSQL's time - time is
+            // negative (-01:30), so cast it to time (which wraps it) and back to interval.
+            case ExpressionType.Subtract when left.Type == typeof(TimeOnly) && right.Type == typeof(TimeOnly):
+            {
+                var difference = ApplyTypeMapping(
+                    new SqlBinaryExpression(ExpressionType.Subtract, left, right, typeof(TimeSpan), null), typeMapping: null);
+
+                return Convert(
+                    Convert(difference, typeof(TimeOnly), _typeMappingSource.FindMapping(typeof(TimeOnly))),
+                    typeof(TimeSpan),
+                    typeMapping ?? difference.TypeMapping);
+            }
+
             case ExpressionType.Subtract
                 when left.Type.FullName == "NodaTime.Instant" && right.Type.FullName == "NodaTime.Instant"
-                || left.Type.FullName == "NodaTime.ZonedDateTime" && right.Type.FullName == "NodaTime.ZonedDateTime":
+                || left.Type.FullName == "NodaTime.ZonedDateTime" && right.Type.FullName == "NodaTime.ZonedDateTime"
+                || left.Type.FullName == "NodaTime.OffsetDateTime" && right.Type.FullName == "NodaTime.OffsetDateTime":
             {
                 _nodaTimeDurationType ??= left.Type.Assembly.GetType("NodaTime.Duration");
                 return (SqlBinaryExpression)ApplyTypeMapping(
@@ -265,18 +311,83 @@ public class NpgsqlSqlExpressionFactory : SqlExpressionFactory
                     new SqlBinaryExpression(ExpressionType.Subtract, left, right, typeof(int), null), typeMapping);
             }
 
+            // PostgreSQL date +/- interval returns a timestamp, whereas NodaTime LocalDate +/- Period returns a LocalDate, so cast back.
+            // See date_pl_interval: https://github.com/postgres/postgres/blob/REL_18_6/src/backend/utils/adt/date.c#L1310-L1322
+            // The operand is explicitly cast to timestamp so that the inner arithmetic doesn't match this case again.
+            case ExpressionType.Add or ExpressionType.Subtract
+                when left.Type.FullName == "NodaTime.LocalDate" && right.Type.FullName == "NodaTime.Period":
+            {
+                var dateMapping = left.TypeMapping ?? _typeMappingSource.FindMapping(left.Type, Dependencies.Model)!;
+                var timestampMapping = _typeMappingSource.FindMapping("timestamp without time zone")!;
+
+                return Convert(
+                    new SqlBinaryExpression(
+                        operatorType,
+                        Convert(ApplyTypeMapping(left, dateMapping), timestampMapping.ClrType, timestampMapping),
+                        ApplyDefaultTypeMapping(right),
+                        timestampMapping.ClrType,
+                        timestampMapping),
+                    left.Type,
+                    dateMapping);
+            }
+
+            // LocalDate + LocalTime => LocalDateTime
+            case ExpressionType.Add
+                when left.Type.FullName == "NodaTime.LocalDate" && right.Type.FullName == "NodaTime.LocalTime":
+            {
+                var localDateTimeType = left.Type.Assembly.GetType("NodaTime.LocalDateTime")!;
+
+                return new SqlBinaryExpression(
+                    ExpressionType.Add,
+                    ApplyDefaultTypeMapping(left),
+                    ApplyDefaultTypeMapping(right),
+                    localDateTimeType,
+                    typeMapping ?? _typeMappingSource.FindMapping(localDateTimeType, Dependencies.Model));
+            }
+
             // The arithmetic is rewritten when the timestamp is mapped to timestamptz (see ApplyTypeMappingOnSqlBinary),
             // which may result in an AtTimeZoneExpression rather than a SqlBinaryExpression.
             case ExpressionType.Add or ExpressionType.Subtract
-                when left.Type.FullName is "NodaTime.Instant" or "NodaTime.ZonedDateTime" && right.Type.FullName == "NodaTime.Duration"
+                when left.Type.FullName is "NodaTime.Instant" or "NodaTime.ZonedDateTime" or "NodaTime.OffsetDateTime"
+                && right.Type.FullName == "NodaTime.Duration"
                 || (left.Type == typeof(DateTime) || left.Type == typeof(DateTimeOffset)) && right.Type == typeof(TimeSpan):
             {
                 return ApplyTypeMapping(new SqlBinaryExpression(operatorType, left, right, left.Type, null), typeMapping);
+            }
+
+            // number * TimeSpan/Duration => TimeSpan/Duration (PostgreSQL double precision * interval)
+            case ExpressionType.Multiply when IsInterval(right.Type) && IsNumber(left.Type):
+            {
+                return ApplyTypeMapping(new SqlBinaryExpression(operatorType, left, right, right.Type, null), typeMapping);
+            }
+
+            // TimeSpan/Duration / TimeSpan/Duration => double: PostgreSQL has no interval / interval, so divide the numbers of seconds
+            case ExpressionType.Divide when IsInterval(left.Type) && IsInterval(right.Type):
+            {
+                var intervalMapping = ExpressionExtensions.InferTypeMapping(left, right)
+                    ?? _typeMappingSource.FindMapping(left.Type, Dependencies.Model);
+
+                return Divide(Epoch(ApplyTypeMapping(left, intervalMapping)), Epoch(ApplyTypeMapping(right, intervalMapping)), typeMapping);
+
+                SqlExpression Epoch(SqlExpression interval)
+                    => Function(
+                        "date_part",
+                        [Constant("epoch"), interval],
+                        nullable: true,
+                        argumentsPropagateNullability: [false, true],
+                        typeof(double));
             }
         }
 
         return base.MakeBinary(operatorType, left, right, typeMapping, existingExpr);
     }
+
+    // TimeSpan and NodaTime's Duration are mapped to PostgreSQL interval
+    private static bool IsInterval(Type type)
+        => type == typeof(TimeSpan) || type.FullName == "NodaTime.Duration";
+
+    private static bool IsNumber(Type type)
+        => type == typeof(double) || type == typeof(float) || type == typeof(long) || type == typeof(int);
 
     /// <summary>
     ///     Creates a new <see cref="PgBinaryExpression" /> with the given arguments.
@@ -470,7 +581,7 @@ public class NpgsqlSqlExpressionFactory : SqlExpressionFactory
                 || right.Type.FullName == "NodaTime.Period"
                 && left.Type.FullName is "NodaTime.LocalDateTime" or "NodaTime.LocalDate" or "NodaTime.LocalTime"
                 || right.Type.FullName == "NodaTime.Duration"
-                && left.Type.FullName is "NodaTime.Instant" or "NodaTime.ZonedDateTime":
+                && left.Type.FullName is "NodaTime.Instant" or "NodaTime.ZonedDateTime" or "NodaTime.OffsetDateTime":
             {
                 var newLeft = ApplyTypeMapping(left, typeMapping);
                 var newRight = ApplyDefaultTypeMapping(right);
@@ -504,6 +615,20 @@ public class NpgsqlSqlExpressionFactory : SqlExpressionFactory
                 return new SqlBinaryExpression(binary.OperatorType, newLeft, newRight, binary.Type, resultMapping);
             }
 
+            // TimeSpan/Duration * number, number * TimeSpan/Duration, TimeSpan/Duration / number => TimeSpan/Duration
+            // (PostgreSQL interval * double precision etc.; integers are implicitly converted to double precision)
+            case ExpressionType.Multiply or ExpressionType.Divide
+                when IsInterval(left.Type) && IsNumber(right.Type)
+                || binary.OperatorType == ExpressionType.Multiply && IsNumber(left.Type) && IsInterval(right.Type):
+            {
+                var intervalIsLeft = IsInterval(left.Type);
+                var newLeft = intervalIsLeft ? ApplyTypeMapping(left, typeMapping) : ApplyDefaultTypeMapping(left);
+                var newRight = intervalIsLeft ? ApplyDefaultTypeMapping(right) : ApplyTypeMapping(right, typeMapping);
+
+                return new SqlBinaryExpression(
+                    binary.OperatorType, newLeft, newRight, binary.Type, typeMapping ?? (intervalIsLeft ? newLeft : newRight).TypeMapping);
+            }
+
             // DateTime - DateTime => TimeSpan
             // DateTimeOffset - DateTimeOffset => TimeSpan
             // DateOnly - DateOnly => TimeSpan
@@ -518,10 +643,13 @@ public class NpgsqlSqlExpressionFactory : SqlExpressionFactory
                 || left.Type.FullName == "NodaTime.Instant" && right.Type.FullName == "NodaTime.Instant"
                 || left.Type.FullName == "NodaTime.LocalDateTime" && right.Type.FullName == "NodaTime.LocalDateTime"
                 || left.Type.FullName == "NodaTime.ZonedDateTime" && right.Type.FullName == "NodaTime.ZonedDateTime"
+                || left.Type.FullName == "NodaTime.OffsetDateTime" && right.Type.FullName == "NodaTime.OffsetDateTime"
                 || left.Type.FullName == "NodaTime.LocalDate" && right.Type.FullName == "NodaTime.LocalDate"
                 || left.Type.FullName == "NodaTime.LocalTime" && right.Type.FullName == "NodaTime.LocalTime":
             {
-                var inferredTypeMapping = ExpressionExtensions.InferTypeMapping(left, right);
+                // When neither side has a type mapping (e.g. two parameters), fall back to the default mapping.
+                var inferredTypeMapping = ExpressionExtensions.InferTypeMapping(left, right)
+                    ?? _typeMappingSource.FindMapping(left.Type, Dependencies.Model);
 
                 return new SqlBinaryExpression(
                     ExpressionType.Subtract,

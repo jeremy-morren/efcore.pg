@@ -56,7 +56,7 @@ WHERE lower(n."DateInterval") = DATE '2018-04-20'
             """
 SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
 FROM "NodaTimeTypes" AS n
-WHERE CAST(upper(n."DateInterval") - INTERVAL 'P1D' AS date) = DATE '2018-04-24'
+WHERE upper(n."DateInterval") - 1 = DATE '2018-04-24'
 """);
     }
 
@@ -70,7 +70,7 @@ WHERE CAST(upper(n."DateInterval") - INTERVAL 'P1D' AS date) = DATE '2018-04-24'
 
         AssertSql(
             """
-SELECT CAST(upper(n."DateInterval") - INTERVAL 'P1D' AS date)
+SELECT upper(n."DateInterval") - 1
 FROM "NodaTimeTypes" AS n
 """);
     }
@@ -132,7 +132,9 @@ WHERE n."DateInterval" @> @dateInterval
 
 SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
 FROM "NodaTimeTypes" AS n
-WHERE n."DateInterval" * @dateInterval = '[2018-04-22,2018-04-24]'::daterange
+WHERE CASE
+    WHEN n."DateInterval" && @dateInterval THEN n."DateInterval" * @dateInterval
+END = '[2018-04-22,2018-04-24]'::daterange
 """);
     }
 
@@ -153,7 +155,9 @@ WHERE n."DateInterval" * @dateInterval = '[2018-04-22,2018-04-24]'::daterange
 
 SELECT n."Id", n."DateInterval", n."Duration", n."Instant", n."InstantRange", n."Interval", n."LocalDate", n."LocalDate2", n."LocalDateRange", n."LocalDateTime", n."LocalTime", n."Long", n."OffsetTime", n."Period", n."TimeZoneId", n."ZonedDateTime"
 FROM "NodaTimeTypes" AS n
-WHERE n."DateInterval" + @dateInterval = '[2018-04-20,2018-04-26]'::daterange
+WHERE CASE
+    WHEN n."DateInterval" && @dateInterval OR n."DateInterval" -|- @dateInterval THEN n."DateInterval" + @dateInterval
+END = '[2018-04-20,2018-04-26]'::daterange
 """);
     }
 

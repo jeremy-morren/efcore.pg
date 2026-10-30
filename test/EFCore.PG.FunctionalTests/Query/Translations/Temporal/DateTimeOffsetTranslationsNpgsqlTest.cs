@@ -113,7 +113,7 @@ WHERE date_part('minute', b."DateTimeOffset" AT TIME ZONE 'UTC')::int = 30
             """
 SELECT b."Id", b."Bool", b."Byte", b."ByteArray", b."DateOnly", b."DateTime", b."DateTimeOffset", b."Decimal", b."Double", b."Enum", b."FlagsEnum", b."Float", b."Guid", b."Int", b."Long", b."Short", b."String", b."TimeOnly", b."TimeSpan"
 FROM "BasicTypesEntities" AS b
-WHERE date_part('second', b."DateTimeOffset" AT TIME ZONE 'UTC')::int = 10
+WHERE floor(date_part('second', b."DateTimeOffset" AT TIME ZONE 'UTC'))::int = 10
 """);
     }
 
@@ -293,11 +293,33 @@ WHERE b."Id" = 1 AND ((b."DateTimeOffset" AT TIME ZONE 'UTC') + 2592000000.0 * I
 """);
     }
 
-    public override Task ToUnixTimeMilliseconds()
-        => AssertTranslationFailed(() => base.ToUnixTimeMilliseconds());
+    public override async Task ToUnixTimeMilliseconds()
+    {
+        await base.ToUnixTimeMilliseconds();
 
-    public override Task ToUnixTimeSecond()
-        => AssertTranslationFailed(() => base.ToUnixTimeSecond());
+        AssertSql(
+            """
+@unixEpochMilliseconds='894295810000'
+
+SELECT b."Id", b."Bool", b."Byte", b."ByteArray", b."DateOnly", b."DateTime", b."DateTimeOffset", b."Decimal", b."Double", b."Enum", b."FlagsEnum", b."Float", b."Guid", b."Int", b."Long", b."Short", b."String", b."TimeOnly", b."TimeSpan"
+FROM "BasicTypesEntities" AS b
+WHERE floor(extract(epoch FROM b."DateTimeOffset") * 1000.0)::bigint = @unixEpochMilliseconds
+""");
+    }
+
+    public override async Task ToUnixTimeSecond()
+    {
+        await base.ToUnixTimeSecond();
+
+        AssertSql(
+            """
+@unixEpochSeconds='894295810'
+
+SELECT b."Id", b."Bool", b."Byte", b."ByteArray", b."DateOnly", b."DateTime", b."DateTimeOffset", b."Decimal", b."Double", b."Enum", b."FlagsEnum", b."Float", b."Guid", b."Int", b."Long", b."Short", b."String", b."TimeOnly", b."TimeSpan"
+FROM "BasicTypesEntities" AS b
+WHERE floor(extract(epoch FROM b."DateTimeOffset"))::bigint = @unixEpochSeconds
+""");
+    }
 
     public override Task ToOffset()
         => AssertTranslationFailed(() => base.ToOffset());

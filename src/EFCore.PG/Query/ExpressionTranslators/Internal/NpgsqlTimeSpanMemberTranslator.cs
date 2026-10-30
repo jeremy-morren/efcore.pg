@@ -92,6 +92,13 @@ public class NpgsqlTimeSpanMemberTranslator : IMemberTranslator
             nameof(TimeSpan.TotalSeconds) => DatePart("epoch", interval),
             nameof(TimeSpan.TotalMilliseconds) => TotalMember(0.001),
 
+            // The number of 100ns ticks (TimeSpan.Ticks, Duration.BclCompatibleTicks); EXTRACT(epoch ...) is exact, unlike date_part()
+            nameof(TimeSpan.Ticks) or "BclCompatibleTicks" when sqlExpressionFactory is NpgsqlSqlExpressionFactory npgsqlSqlExpressionFactory
+                => sqlExpressionFactory.Convert(
+                    sqlExpressionFactory.Multiply(
+                        npgsqlSqlExpressionFactory.Extract("epoch", interval), sqlExpressionFactory.Constant(10_000_000m)),
+                    typeof(long)),
+
             _ => null
         };
 

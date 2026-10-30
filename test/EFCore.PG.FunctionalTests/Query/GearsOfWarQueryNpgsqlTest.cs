@@ -47,6 +47,36 @@ WHERE length(s."Banner5") = 5
     public override Task DateTimeOffsetNow_minus_timespan(bool async)
         => Assert.ThrowsAsync<InvalidOperationException>(() => base.DateTimeOffsetNow_minus_timespan(async));
 
+    // TimeSpan.Ticks is translated, so the aggregate operations are too
+    public override async Task Client_eval_followed_by_aggregate_operation(bool async)
+    {
+        await AssertSum(async, ss => ss.Set<Mission>().Select(m => m.Duration.Ticks));
+        await AssertAverage(async, ss => ss.Set<Mission>().Select(m => m.Duration.Ticks));
+        await AssertMin(async, ss => ss.Set<Mission>().Select(m => m.Duration.Ticks));
+        await AssertMax(async, ss => ss.Set<Mission>().Select(m => m.Duration.Ticks));
+
+        AssertSql(
+            """
+SELECT COALESCE(sum(CAST(extract(epoch FROM m."Duration") * 10000000.0 AS bigint)), 0.0)::bigint
+FROM "Missions" AS m
+""",
+            //
+            """
+SELECT avg(CAST(extract(epoch FROM m."Duration") * 10000000.0 AS bigint)::double precision)
+FROM "Missions" AS m
+""",
+            //
+            """
+SELECT min(CAST(extract(epoch FROM m."Duration") * 10000000.0 AS bigint))
+FROM "Missions" AS m
+""",
+            //
+            """
+SELECT max(CAST(extract(epoch FROM m."Duration") * 10000000.0 AS bigint))
+FROM "Missions" AS m
+""");
+    }
+
     public override async Task DateTimeOffset_Date_returns_datetime(bool async)
     {
         var dateTimeOffset = new DateTimeOffset(2, 3, 1, 8, 0, 0, new TimeSpan(-5, 0, 0));

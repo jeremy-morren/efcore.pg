@@ -35,7 +35,110 @@ public class NpgsqlDateTimeMethodTranslator(
            ?? TranslateDateOnly(instance, method, arguments)
            ?? TranslateTimeOnly(instance, method, arguments)
            ?? TranslateTimeZoneInfo(method, arguments)
+           ?? TranslateArithmetic(instance, method, arguments)
            ?? TranslateDatePart(instance, method, arguments);
+
+    // These methods are equivalent to the corresponding operators, which NpgsqlSqlExpressionFactory translates (e.g. timestamptz arithmetic
+    // is performed in UTC).
+    private SqlExpression? TranslateArithmetic(
+        SqlExpression? instance,
+        MethodInfo method,
+        IReadOnlyList<SqlExpression> arguments)
+    {
+        if (instance is null)
+        {
+            return method.Name switch
+            {
+                // TimeSpan.FromDays(n) etc.: n * INTERVAL '1 day' (PostgreSQL interval * double precision)
+                nameof(TimeSpan.FromDays) when FromValue(typeof(TimeSpan)) is { } n => Multiple(n, TimeSpan.FromDays(1)),
+                nameof(TimeSpan.FromHours) when FromValue(typeof(TimeSpan)) is { } n => Multiple(n, TimeSpan.FromHours(1)),
+                nameof(TimeSpan.FromMinutes) when FromValue(typeof(TimeSpan)) is { } n => Multiple(n, TimeSpan.FromMinutes(1)),
+                nameof(TimeSpan.FromSeconds) when FromValue(typeof(TimeSpan)) is { } n => Multiple(n, TimeSpan.FromSeconds(1)),
+                nameof(TimeSpan.FromMilliseconds) when FromValue(typeof(TimeSpan)) is { } n => Multiple(n, TimeSpan.FromMilliseconds(1)),
+
+                nameof(DateTimeOffset.FromUnixTimeSeconds) when method.DeclaringType == typeof(DateTimeOffset)
+                    => ToTimestamp(arguments[0]),
+                nameof(DateTimeOffset.FromUnixTimeMilliseconds) when method.DeclaringType == typeof(DateTimeOffset)
+                    => ToTimestamp(
+                        _sqlExpressionFactory.Divide(
+                            _sqlExpressionFactory.Convert(arguments[0], typeof(double)), _sqlExpressionFactory.Constant(1000d))),
+                _ => null
+            };
+
+            // A single number argument (.NET's TimeSpan.FromMilliseconds(long) also has an optional microseconds argument)
+            SqlExpression? FromValue(Type declaringType)
+                => method.DeclaringType == declaringType
+                    && (arguments.Count == 1 || arguments is [_, SqlConstantExpression { Value: 0L }])
+                    && arguments[0].Type is var type && (type == typeof(double) || type == typeof(long) || type == typeof(int))
+                        ? arguments[0]
+                        : null;
+
+            SqlExpression Multiple(SqlExpression n, TimeSpan unit)
+                => _sqlExpressionFactory.Multiply(n, _sqlExpressionFactory.Constant(unit));
+
+            SqlExpression ToTimestamp(SqlExpression seconds)
+                => _sqlExpressionFactory.Function(
+                    "to_timestamp",
+                    [seconds],
+                    nullable: true,
+                    argumentsPropagateNullability: TrueArrays[1],
+                    typeof(DateTimeOffset),
+                    _typeMappingSource.FindMapping(typeof(DateTimeOffset)));
+        }
+
+        if (method.DeclaringType == typeof(DateTimeOffset) && arguments is [])
+        {
+            // The number of seconds/milliseconds since 1970-01-01, rounded down like .NET; EXTRACT(epoch ...) is exact, unlike date_part()
+            switch (method.Name)
+            {
+                case nameof(DateTimeOffset.ToUnixTimeSeconds):
+                    return Floor(_sqlExpressionFactory.Extract("epoch", instance));
+                case nameof(DateTimeOffset.ToUnixTimeMilliseconds):
+                    return Floor(_sqlExpressionFactory.Multiply(_sqlExpressionFactory.Extract("epoch", instance), _sqlExpressionFactory.Constant(1000m)));
+            }
+
+            SqlExpression Floor(SqlExpression value)
+                => _sqlExpressionFactory.Convert(
+                    _sqlExpressionFactory.Function(
+                        "floor", [value], nullable: true, argumentsPropagateNullability: TrueArrays[1], typeof(decimal)),
+                    typeof(long));
+        }
+
+        if (method.DeclaringType == typeof(DateTime) || method.DeclaringType == typeof(DateTimeOffset))
+        {
+            return method.Name switch
+            {
+                nameof(DateTime.Add) when arguments is [var timeSpan] => _sqlExpressionFactory.Add(instance, timeSpan),
+                nameof(DateTime.Subtract) when arguments is [var other] => _sqlExpressionFactory.Subtract(instance, other),
+                _ => null
+            };
+        }
+
+        if (method.DeclaringType == typeof(TimeSpan))
+        {
+            return method.Name switch
+            {
+                nameof(TimeSpan.Add) when arguments is [var other] => _sqlExpressionFactory.Add(instance, other),
+                nameof(TimeSpan.Subtract) when arguments is [var other] => _sqlExpressionFactory.Subtract(instance, other),
+                nameof(TimeSpan.Negate) when arguments is [] => _sqlExpressionFactory.Negate(instance),
+                nameof(TimeSpan.Multiply) when arguments is [var factor] => _sqlExpressionFactory.Multiply(instance, factor),
+                nameof(TimeSpan.Divide) when arguments is [var divisor] => _sqlExpressionFactory.Divide(instance, divisor),
+
+                // The absolute value (there's no abs() for interval)
+                nameof(TimeSpan.Duration) when arguments is [] && _sqlExpressionFactory.ApplyDefaultTypeMapping(instance) is var timeSpan
+                    => _sqlExpressionFactory.Function(
+                        "GREATEST",
+                        [timeSpan, _sqlExpressionFactory.Negate(timeSpan)],
+                        nullable: true,
+                        argumentsPropagateNullability: TrueArrays[2],
+                        typeof(TimeSpan),
+                        timeSpan.TypeMapping),
+                _ => null
+            };
+        }
+
+        return null;
+    }
 
     private SqlExpression? TranslateDbFunctions(
         MethodInfo method,
@@ -213,11 +316,15 @@ public class NpgsqlDateTimeMethodTranslator(
                 // but as a timestamptz).
                 // If our operand is already timestamp, no need to do anything. We throw for anything else to avoid accidentally applying
                 // AT TIME ZONE to a non-timestamptz, which would do a timezone conversion
-                var dateTime = arguments[0].TypeMapping switch
+                // An argument whose type mapping isn't known yet (e.g. a parameter) gets the default one.
+                var argument = arguments[0].TypeMapping is null
+                    ? _sqlExpressionFactory.ApplyDefaultTypeMapping(arguments[0])
+                    : arguments[0];
+                var dateTime = argument.TypeMapping switch
                 {
-                    NpgsqlTimestampTypeMapping => arguments[0],
-                    NpgsqlTimestampTzTypeMapping => _sqlExpressionFactory.AtUtc(arguments[0]),
-                    _ => throw new NotSupportedException("Can only apply TimeOnly.FromDateTime on a timestamp or timestamptz column")
+                    NpgsqlTimestampTypeMapping => argument,
+                    NpgsqlTimestampTzTypeMapping => _sqlExpressionFactory.AtUtc(argument),
+                    _ => throw new NotSupportedException("Can only apply DateOnly.FromDateTime on a timestamp or timestamptz column")
                 };
 
                 return _sqlExpressionFactory.Convert(dateTime, typeof(DateOnly), _typeMappingSource.FindMapping(typeof(DateOnly)));
@@ -238,7 +345,7 @@ public class NpgsqlDateTimeMethodTranslator(
                 return new SqlBinaryExpression(
                     ExpressionType.Add,
                     _sqlExpressionFactory.Fragment("DATE '0001-01-01'"),
-                    arguments[0],
+                    _sqlExpressionFactory.ApplyDefaultTypeMapping(arguments[0]),
                     typeof(DateOnly),
                     _typeMappingSource.FindMapping(typeof(DateOnly)));
             }
@@ -290,10 +397,14 @@ public class NpgsqlDateTimeMethodTranslator(
             // but as a timestamptz).
             // If our operand is already timestamp, no need to do anything. We throw for anything else to avoid accidentally applying
             // AT TIME ZONE to a non-timestamptz, which would do a timezone conversion
-            var dateTime = arguments[0].TypeMapping switch
+            // An argument whose type mapping isn't known yet (e.g. a parameter) gets the default one.
+            var argument = arguments[0].TypeMapping is null
+                ? _sqlExpressionFactory.ApplyDefaultTypeMapping(arguments[0])
+                : arguments[0];
+            var dateTime = argument.TypeMapping switch
             {
-                NpgsqlTimestampTypeMapping => arguments[0],
-                NpgsqlTimestampTzTypeMapping => _sqlExpressionFactory.AtUtc(arguments[0]),
+                NpgsqlTimestampTypeMapping => argument,
+                NpgsqlTimestampTzTypeMapping => _sqlExpressionFactory.AtUtc(argument),
                 _ => throw new NotSupportedException("Can only apply TimeOnly.FromDateTime on a timestamp or timestamptz column")
             };
 
@@ -315,11 +426,24 @@ public class NpgsqlDateTimeMethodTranslator(
                 return _sqlExpressionFactory.Convert(instance, typeof(TimeSpan), _typeMappingSource.FindMapping(typeof(TimeSpan)));
             }
 
-            if (method.DeclaringType == typeof(TimeOnly) && method.Name == nameof(TimeOnly.IsBetween))
+            // Like .NET, wrap around midnight when the start is after the end (e.g. 00:30 is between 22:00 and 01:00)
+            if (method.DeclaringType == typeof(TimeOnly) && method.Name == nameof(TimeOnly.IsBetween) && arguments is [var start, var end])
             {
-                return _sqlExpressionFactory.And(
-                    _sqlExpressionFactory.GreaterThanOrEqual(instance, arguments[0]),
-                    _sqlExpressionFactory.LessThan(instance, arguments[1]));
+                var within = _sqlExpressionFactory.And(
+                    _sqlExpressionFactory.GreaterThanOrEqual(instance, start),
+                    _sqlExpressionFactory.LessThan(instance, end));
+                var wrapped = _sqlExpressionFactory.OrElse(
+                    _sqlExpressionFactory.GreaterThanOrEqual(instance, start),
+                    _sqlExpressionFactory.LessThan(instance, end));
+
+                return (start, end) switch
+                {
+                    (SqlConstantExpression { Value: TimeOnly startValue }, SqlConstantExpression { Value: TimeOnly endValue })
+                        => startValue <= endValue ? within : wrapped,
+                    _ => _sqlExpressionFactory.Case(
+                        [new CaseWhenClause(_sqlExpressionFactory.LessThanOrEqual(start, end), within)],
+                        wrapped)
+                };
             }
 
             if (method.DeclaringType == typeof(TimeOnly) && method.Name == nameof(TimeOnly.Add)

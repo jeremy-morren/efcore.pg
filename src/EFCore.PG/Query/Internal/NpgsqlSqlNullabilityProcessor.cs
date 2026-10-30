@@ -9,6 +9,7 @@ namespace Npgsql.EntityFrameworkCore.PostgreSQL.Query.Internal;
 public class NpgsqlSqlNullabilityProcessor : SqlNullabilityProcessor
 {
     private readonly ISqlExpressionFactory _sqlExpressionFactory;
+    private readonly IRelationalTypeMappingSource _typeMappingSource;
 
     /// <summary>
     ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
@@ -22,6 +23,28 @@ public class NpgsqlSqlNullabilityProcessor : SqlNullabilityProcessor
         : base(dependencies, parameters)
     {
         _sqlExpressionFactory = dependencies.SqlExpressionFactory;
+        _typeMappingSource = dependencies.TypeMappingSource;
+    }
+
+    /// <inheritdoc />
+    protected override SqlExpression VisitSqlParameter(
+        SqlParameterExpression sqlParameterExpression,
+        bool allowOptimizedExpansion,
+        out bool nullable)
+    {
+        var result = base.VisitSqlParameter(sqlParameterExpression, allowOptimizedExpansion, out nullable);
+
+        // A translation can change an expression's type without changing its store type (e.g. NodaTime's LocalDate.ToDateOnly()), by
+        // rebuilding a parameter with the new type; when that parameter is inlined as a constant (e.g. with EF.Constant()), its value is
+        // still of the original type, which the new type's mapping can't generate a literal for. Use the value type's mapping instead.
+        if (result is SqlConstantExpression { Value: { } value, TypeMapping: { } typeMapping } constant
+            && !constant.Type.UnwrapNullableType().IsInstanceOfType(value)
+            && _typeMappingSource.FindMapping(value.GetType(), typeMapping.StoreType) is { } valueTypeMapping)
+        {
+            return new SqlFragmentExpression(valueTypeMapping.GenerateSqlLiteral(value), constant.Type, typeMapping);
+        }
+
+        return result;
     }
 
     /// <inheritdoc />

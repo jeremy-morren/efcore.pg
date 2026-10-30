@@ -129,7 +129,8 @@ public class NpgsqlDateTimeMemberTranslator : IMemberTranslator
             nameof(DateTime.Day) => DatePart(instance!, "day"),
             nameof(DateTime.Hour) => DatePart(instance!, "hour"),
             nameof(DateTime.Minute) => DatePart(instance!, "minute"),
-            nameof(DateTime.Second) => DatePart(instance!, "second"),
+            // date_part('second') includes the fractional seconds, which .NET truncates
+            nameof(DateTime.Second) => DatePart(instance!, "second", floor: true),
 
             nameof(DateTime.Millisecond) when DatePart(instance!, "milliseconds", floor: true) is { } milliseconds
                 => _sqlExpressionFactory.Modulo(milliseconds, _sqlExpressionFactory.Constant(1000)),
@@ -151,8 +152,17 @@ public class NpgsqlDateTimeMemberTranslator : IMemberTranslator
                     typeof(TimeSpan),
                     _typeMappingSource.FindMapping(typeof(TimeSpan), storeTypeName: "time")),
 
-            // TODO: Should be possible
-            nameof(DateTime.Ticks) => null,
+            // The number of 100ns ticks since 0001-01-01 (TimeOnly: since midnight); EXTRACT(epoch ...) is exact, unlike date_part().
+            // DateTime's type mapping must be known (see TryConvertAwayFromTimestampTz).
+            nameof(DateTime.Ticks) when instance is { TypeMapping: not null } || instance!.Type != typeof(DateTime)
+                => _sqlExpressionFactory.Convert(
+                    _sqlExpressionFactory.Multiply(
+                        declaringType == typeof(TimeOnly)
+                            ? _sqlExpressionFactory.Extract("epoch", instance)
+                            : _sqlExpressionFactory.Add(
+                                _sqlExpressionFactory.Extract("epoch", instance), _sqlExpressionFactory.Constant(62_135_596_800m)),
+                        _sqlExpressionFactory.Constant(10_000_000m)),
+                    typeof(long)),
 
             _ => null
         };
@@ -209,8 +219,15 @@ public class NpgsqlDateTimeMemberTranslator : IMemberTranslator
             nameof(DateTimeOffset.DateTime) => _sqlExpressionFactory.AtUtc(instance),
 
             // We only support UTC DateTimeOffset, so DateTimeOffset.UtcDateTime does nothing (type change on CLR change, no change on the
-            // PG side.
-            nameof(DateTimeOffset.UtcDateTime) => instance,
+            // PG side). EF removes casts between identical store types, so rebuild the expression with the new type instead.
+            nameof(DateTimeOffset.UtcDateTime) => instance switch
+            {
+                SqlConstantExpression { Value: DateTimeOffset value } => _sqlExpressionFactory.Constant(value.UtcDateTime, _timestampTzMapping),
+                ColumnExpression c => new ColumnExpression(c.Name, c.TableAlias, c.Column, typeof(DateTime), _timestampTzMapping, c.IsNullable),
+                SqlParameterExpression p
+                    => new SqlParameterExpression(p.InvariantName, p.Name, typeof(DateTime), p.IsNullable, p.TranslationMode, _timestampTzMapping),
+                _ => _sqlExpressionFactory.Convert(instance, typeof(DateTime), _timestampTzMapping)
+            },
 
             // Convert to timestamp without time zone, applying a time zone conversion based on the TimeZone connection parameter.
             nameof(DateTimeOffset.LocalDateTime) => _sqlExpressionFactory.Convert(instance, typeof(DateTime), _timestampMapping),
